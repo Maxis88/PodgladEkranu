@@ -19,7 +19,11 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 import java.io.ByteArrayOutputStream;
+import java.io.OutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -35,7 +39,10 @@ public class ViewerActivity extends Activity {
     private static final int[] JPEG = {50, 65, 80, 92};
 
     private String baza, haslo, pc, hash = "";
-    private boolean relay;
+    private boolean relay, sterowanie = false;
+    private LinearLayout rzadSter;
+    private TextView bSter;
+    private final ExecutorService exIn = Executors.newSingleThreadExecutor();
     private int interwal = 3000, jakosc = 2, monitor = 1, monitorow = 1;
     private long bajty = 0;
     private volatile boolean trwa = false, aktywny = false;
@@ -76,6 +83,14 @@ public class ViewerActivity extends Activity {
 
         obraz = new ZoomImageView(this);
         obraz.setOnTap(() -> pasek.setVisibility(pasek.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
+        obraz.setOnKlik((nx, ny, typ) -> {
+            try {
+                JSONObject e = new JSONObject().put("t", "click").put("x", nx).put("y", ny);
+                if (typ == 1) e.put("n", 2);
+                if (typ == 2) e.put("b", "right");
+                wyslij(new JSONArray().put(e));
+            } catch (Exception ignored) {}
+        });
         root.addView(obraz, new FrameLayout.LayoutParams(-1, -1));
 
         // pływający pasek – wyśrodkowany, o ograniczonej szerokości na tabletach
@@ -105,6 +120,13 @@ public class ViewerActivity extends Activity {
         odsw.setTextSize(18);
         odsw.setPadding(Styl.dp(this, 16), Styl.dp(this, 8), Styl.dp(this, 16), Styl.dp(this, 8));
         odsw.setOnClickListener(v -> pobierz(true));
+        bSter = Styl.przycisk(this, "🖱", false);
+        bSter.setTextSize(18);
+        bSter.setPadding(Styl.dp(this, 16), Styl.dp(this, 8), Styl.dp(this, 16), Styl.dp(this, 8));
+        bSter.setOnClickListener(v -> przelaczSter(!sterowanie));
+        LinearLayout.LayoutParams lps = new LinearLayout.LayoutParams(-2, -2);
+        lps.rightMargin = Styl.dp(this, 8);
+        r1.addView(bSter, lps);
         r1.addView(odsw);
         p.addView(r1);
 
@@ -121,6 +143,21 @@ public class ViewerActivity extends Activity {
             r2.addView(t, lp);
         }
         p.addView(r2, Styl.odstep(this, 10));
+
+        // rząd sterowania
+        rzadSter = new LinearLayout(this);
+        String[][] kl = {{"⌨ Pisz", ""}, {"▲", "su"}, {"▼", "sd"}, {"Enter", "enter"}, {"⌫", "backspace"}, {"Esc", "esc"}, {"⊞", "win"}};
+        for (int i = 0; i < kl.length; i++) {
+            final String kod = kl[i][1];
+            TextView t = maly(kl[i][0]);
+            t.setPadding(Styl.dp(this, 4), Styl.dp(this, 9), Styl.dp(this, 4), Styl.dp(this, 9));
+            t.setOnClickListener(v -> klawisz(kod));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, -2, i == 0 ? 1.8f : 1f);
+            if (i < kl.length - 1) lp.rightMargin = Styl.dp(this, 6);
+            rzadSter.addView(t, lp);
+        }
+        rzadSter.setVisibility(View.GONE);
+        p.addView(rzadSter, Styl.odstep(this, 8));
         opisy();
 
         FrameLayout.LayoutParams lpp = new FrameLayout.LayoutParams(
@@ -187,6 +224,92 @@ public class ViewerActivity extends Activity {
         new AlertDialog.Builder(this).setTitle("Monitor").setItems(o, (d, w) -> {
             monitor = w < monitorow ? w + 1 : 0; zapisz(); pobierz(true);
         }).show();
+    }
+
+    private void przelaczSter(boolean wl) {
+        sterowanie = wl;
+        obraz.setSterowanie(wl);
+        rzadSter.setVisibility(wl ? View.VISIBLE : View.GONE);
+        bSter.setBackground(Styl.klikalne(wl ? Styl.AKCENT : Styl.KARTA2, 14, this));
+        if (wl) Toast.makeText(this, "Sterowanie: stuknij = klik, 2× = podwójny, przytrzymaj = prawy, 2 palce = powiększ/przesuń",
+                Toast.LENGTH_LONG).show();
+    }
+
+    private void klawisz(String kod) {
+        try {
+            if (kod.isEmpty()) { pisz(); return; }
+            JSONObject e;
+            if (kod.equals("su") || kod.equals("sd"))
+                e = new JSONObject().put("t", "scroll").put("d", kod.equals("su") ? 3 : -3);
+            else e = new JSONObject().put("t", "key").put("k", new JSONArray().put(kod));
+            wyslij(new JSONArray().put(e));
+        } catch (Exception ignored) {}
+    }
+
+    private void pisz() {
+        EditText e = Styl.pole(this, "Tekst do wpisania na komputerze", InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        e.setSingleLine(false);
+        e.setMaxLines(5);
+        LinearLayout l = new LinearLayout(this);
+        int p = Styl.dp(this, 22);
+        l.setPadding(p, Styl.dp(this, 8), p, 0);
+        l.addView(e, new LinearLayout.LayoutParams(-1, -2));
+        AlertDialog d = new AlertDialog.Builder(this).setTitle("Pisz na komputerze").setView(l)
+                .setPositiveButton("Wyślij", (x, y) -> wyslijTekst(e.getText().toString(), false))
+                .setNeutralButton("Wyślij + Enter", (x, y) -> wyslijTekst(e.getText().toString(), true))
+                .setNegativeButton("Anuluj", null).create();
+        d.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+        d.show();
+        e.requestFocus();
+    }
+
+    private void wyslijTekst(String s, boolean enter) {
+        try {
+            JSONArray a = new JSONArray();
+            if (!s.isEmpty()) a.put(new JSONObject().put("t", "text").put("s", s));
+            if (enter) a.put(new JSONObject().put("t", "key").put("k", new JSONArray().put("enter")));
+            if (a.length() > 0) wyslij(a);
+        } catch (Exception ignored) {}
+    }
+
+    /** Wysyła polecenia myszy/klawiatury do komputera, potem szybko odświeża obraz. */
+    private void wyslij(JSONArray zdarzenia) {
+        final String url = baza + (relay ? "?a=input&pc=" + MainActivity.enc(pc) + "&m=" : "/input?m=") + monitor;
+        final byte[] dane = zdarzenia.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        exIn.execute(() -> {
+            String blad = null;
+            try {
+                HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+                c.setConnectTimeout(5000);
+                c.setReadTimeout(10000);
+                c.setDoOutput(true);
+                c.setRequestMethod("POST");
+                c.setRequestProperty("X-Key", haslo);
+                c.setRequestProperty("Content-Type", "application/json");
+                c.setFixedLengthStreamingMode(dane.length);
+                OutputStream o = c.getOutputStream();
+                o.write(dane);
+                o.close();
+                int kod = c.getResponseCode();
+                if (kod == 403) blad = "Sterowanie jest wyłączone na komputerze – zaznacz „Zezwalaj na sterowanie” w programie na Windows.";
+                else if (kod == 401) blad = "Złe hasło";
+                else if (kod != 200) blad = "Błąd sterowania (" + kod + ")";
+                c.disconnect();
+            } catch (Exception e) {
+                blad = "Brak połączenia";
+            }
+            final String fb = blad;
+            ui.post(() -> {
+                if (fb != null) {
+                    Toast.makeText(this, fb, Toast.LENGTH_LONG).show();
+                    if (fb.startsWith("Sterowanie jest")) przelaczSter(false);
+                    return;
+                }
+                ui.postDelayed(() -> pobierz(false), relay ? 1200 : 250);
+                ui.postDelayed(() -> pobierz(false), relay ? 2800 : 900);
+            });
+        });
     }
 
     private void restart() {
@@ -267,5 +390,6 @@ public class ViewerActivity extends Activity {
     @Override protected void onDestroy() {
         super.onDestroy();
         ex.shutdownNow();
+        exIn.shutdownNow();
     }
 }

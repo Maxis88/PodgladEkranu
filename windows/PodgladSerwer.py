@@ -9,12 +9,107 @@ from urllib.parse import urlparse, parse_qs
 import mss
 from PIL import Image
 
+# --- sterowanie myszą i klawiaturą (Windows SendInput) ---
+import ctypes
+from ctypes import wintypes
+if sys.platform == "win32":
+    user32 = ctypes.windll.user32
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+    class _KI(ctypes.Structure):
+        _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD),
+                    ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+    class _MI(ctypes.Structure):
+        _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG), ("mouseData", ctypes.c_long),
+                    ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+    class _HI(ctypes.Structure):
+        _fields_ = [("uMsg", wintypes.DWORD), ("wParamL", wintypes.WORD), ("wParamH", wintypes.WORD)]
+
+    class _U(ctypes.Union):
+        _fields_ = [("ki", _KI), ("mi", _MI), ("hi", _HI)]
+
+    class _IN(ctypes.Structure):
+        _fields_ = [("type", wintypes.DWORD), ("u", _U)]
+
+
+def _wyslij(*inp):
+    arr = (_IN * len(inp))(*inp)
+    user32.SendInput(len(inp), arr, ctypes.sizeof(_IN))
+
+
+def _mysz(flagi, dane=0):
+    return _IN(0, _U(mi=_MI(0, 0, dane, flagi, 0, 0)))
+
+
+def _klaw(vk=0, scan=0, flagi=0):
+    return _IN(1, _U(ki=_KI(vk, scan, flagi, 0, 0)))
+
+
+VK = {"enter": 0x0D, "backspace": 0x08, "tab": 0x09, "esc": 0x1B, "delete": 0x2E, "space": 0x20,
+      "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27, "home": 0x24, "end": 0x23,
+      "pgup": 0x21, "pgdn": 0x22, "win": 0x5B, "ctrl": 0x11, "alt": 0x12, "shift": 0x10,
+      "f5": 0x74, "f11": 0x7A}
+ROZSZERZONE = {0x2E, 0x26, 0x28, 0x25, 0x27, 0x24, 0x23, 0x21, 0x22, 0x5B}
+
+
+def wykonaj(zdarzenia, monitor):
+    """Wykonuje polecenia z telefonu. x,y to ułamki (0–1) szerokości/wysokości monitora."""
+    if sys.platform != "win32":
+        return
+    with mss.mss() as sct:
+        mons = sct.monitors
+        m = mons[monitor] if 0 <= monitor < len(mons) else mons[1]
+    for e in zdarzenia:
+        t = e.get("t")
+        if "x" in e:
+            x = m["left"] + int(min(1, max(0, float(e["x"]))) * (m["width"] - 1))
+            y = m["top"] + int(min(1, max(0, float(e["y"]))) * (m["height"] - 1))
+            user32.SetCursorPos(x, y)
+        if t == "click":
+            dn, up = (0x0008, 0x0010) if e.get("b") == "right" else (0x0002, 0x0004)
+            for _ in range(int(e.get("n", 1))):
+                _wyslij(_mysz(dn), _mysz(up))
+                time.sleep(0.03)
+        elif t == "scroll":
+            _wyslij(_mysz(0x0800, int(e.get("d", 1)) * 120))
+        elif t == "text":
+            for ch in str(e.get("s", ""))[:2000]:
+                if ch == "\n":
+                    _wyslij(_klaw(0x0D), _klaw(0x0D, 0, 2)); continue
+                b = ch.encode("utf-16-le")
+                for i in range(0, len(b), 2):
+                    kod = int.from_bytes(b[i:i + 2], "little")
+                    _wyslij(_klaw(0, kod, 4), _klaw(0, kod, 4 | 2))
+        elif t == "key":
+            klawisze = e.get("k", [])
+            if isinstance(klawisze, str):
+                klawisze = [klawisze]
+            vks = []
+            for k in klawisze:
+                k = str(k).lower()
+                v = VK.get(k) or (ord(k.upper()) if len(k) == 1 and k.isalnum() else None)
+                if v:
+                    vks.append(v)
+            for v in vks:
+                _wyslij(_klaw(v, 0, 1 if v in ROZSZERZONE else 0))
+            for v in reversed(vks):
+                _wyslij(_klaw(v, 0, (1 if v in ROZSZERZONE else 0) | 2))
+
+
 APP = "PodgladEkranu"
 UDP_PORT = 8766
 CFG_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), APP)
 CFG_FILE = os.path.join(CFG_DIR, "config.json")
 
-stan = {"haslo": "", "log": None, "nazwa": socket.gethostname()}
+stan = {"haslo": "", "log": None, "nazwa": socket.gethostname(), "sterowanie": False}
 _lock = threading.Lock()
 
 
@@ -111,11 +206,29 @@ class Handler(BaseHTTPRequestHandler):
                 h, jpg, ile = zrzut(mon, skala, jak, g("h", ""))
             except Exception as e:
                 return self._send(500, str(e).encode())
-            extra = {"X-Hash": h, "X-Monitors": str(ile)}
+            extra = {"X-Hash": h, "X-Monitors": str(ile), "X-Control": "1" if stan["sterowanie"] else "0"}
             if jpg is None:
                 return self._send(204, extra=extra)
             return self._send(200, jpg, "image/jpeg", extra)
         self._send(404)
+
+
+    def do_POST(self):
+        u = urlparse(self.path)
+        if u.path != "/input":
+            return self._send(404)
+        if not self._auth():
+            return self._send(401)
+        n = int(self.headers.get("Content-Length", "0") or 0)
+        dane = self.rfile.read(min(n, 65536))
+        if not stan["sterowanie"]:
+            return self._send(403, "Sterowanie wyłączone na komputerze".encode("utf-8"))
+        try:
+            mon = int(parse_qs(u.query).get("m", ["1"])[0])
+            wykonaj(json.loads(dane.decode("utf-8")), mon)
+        except Exception as e:
+            return self._send(500, str(e).encode())
+        self._send(200, b"ok")
 
 
 class Serwer:
@@ -166,7 +279,8 @@ class Posrednik:
         threading.Thread(target=self.petla, daemon=True).start()
 
     def _req(self, a, dane=None, extra=None):
-        h = {"X-Key": self.haslo, "X-Name": stan["nazwa"].encode("utf-8").decode("latin-1"), "User-Agent": "PodgladEkranu/1.2"}
+        h = {"X-Key": self.haslo, "X-Name": stan["nazwa"].encode("utf-8").decode("latin-1"),
+             "X-Control": "1" if stan["sterowanie"] else "0", "User-Agent": "PodgladEkranu/1.3"}
         h.update(extra or {})
         req = urllib.request.Request(f"{self.url}?a={a}", data=dane, headers=h, method="POST" if dane else "GET")
         with urllib.request.urlopen(req, timeout=20) as r:
@@ -177,6 +291,12 @@ class Posrednik:
         while self.dziala:
             try:
                 r = json.loads(self._req("poll"))
+                if r.get("inp") and stan["sterowanie"]:
+                    for paczka in r["inp"]:
+                        try:
+                            wykonaj(paczka.get("ev", []), int(paczka.get("m", 1)))
+                        except Exception as e:
+                            self.log(f"Sterowanie: błąd ({e})")
                 if blad:
                     self.log("Internet: połączono ponownie"); blad = False
                 if r.get("wiek", 99999) < 20:
@@ -258,6 +378,11 @@ class Okno:
         ttk.Checkbutton(f, text="Uruchamiaj razem z Windows (w tle)", variable=self.auto,
                         command=self.zmien_auto).grid(row=7, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
+        self.ster = tk.BooleanVar(value=self.cfg.get("sterowanie", False))
+        ttk.Checkbutton(f, text="Zezwalaj na sterowanie myszą i klawiaturą z telefonu", variable=self.ster,
+                        command=self.zmien_ster).grid(row=14, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        stan["sterowanie"] = self.ster.get()
+
         ttk.Label(f, text="Zdarzenia:").grid(row=8, column=0, sticky="w", pady=(8, 0))
         self.lista = tk.Listbox(f, height=6, width=48)
         self.lista.grid(row=9, column=0, columnspan=2)
@@ -278,10 +403,16 @@ class Okno:
             messagebox.showerror("Błąd", str(e))
         self.zapisz()
 
+    def zmien_ster(self):
+        stan["sterowanie"] = self.ster.get()
+        self.dopisz("Sterowanie " + ("WŁĄCZONE" if stan["sterowanie"] else "wyłączone"))
+        self.zapisz()
+
     def zapisz(self):
         try:
             zapisz_cfg({"haslo": self.haslo.get(), "port": int(self.port.get() or 8765), "auto": self.auto.get(),
-                        "url": self.url.get().strip(), "nazwa": self.nazwa.get().strip()})
+                        "url": self.url.get().strip(), "nazwa": self.nazwa.get().strip(),
+                        "sterowanie": self.ster.get()})
         except Exception:
             pass
 

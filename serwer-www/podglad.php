@@ -57,7 +57,11 @@ switch ($a) {
             'q' => (int)($_GET['q'] ?? 80),
         ]);
         $meta = czytaj("$dir/meta.json");
-        if ($meta) { header('X-Monitors: ' . (int)($meta['mon'] ?? 1)); header('X-Hash: ' . ($meta['h'] ?? '')); }
+        if ($meta) {
+            header('X-Monitors: ' . (int)($meta['mon'] ?? 1));
+            header('X-Hash: ' . ($meta['h'] ?? ''));
+            header('X-Control: ' . (!empty($meta['ster']) ? '1' : '0'));
+        }
         if (!$meta || empty($meta['h']) || !is_file("$dir/frame.jpg") || $meta['h'] === ($_GET['h'] ?? '')) {
             http_response_code(204); exit;
         }
@@ -66,15 +70,43 @@ switch ($a) {
         readfile("$dir/frame.jpg");
         break;
 
+    case 'input':   // telefon: polecenia myszy/klawiatury do kolejki
+        if (!is_dir($dir)) { http_response_code(503); exit; }
+        $meta = czytaj("$dir/meta.json");
+        if (empty($meta['ster'])) { http_response_code(403); echo 'Sterowanie wyłączone na komputerze'; exit; }
+        $ev = json_decode(file_get_contents('php://input', false, null, 0, 65536), true);
+        if (!is_array($ev)) { http_response_code(400); exit; }
+        $fp = fopen("$dir/input.json", 'c+');
+        flock($fp, LOCK_EX);
+        $q = json_decode(stream_get_contents($fp), true) ?: [];
+        $q[] = ['m' => (int)($_GET['m'] ?? 1), 'ev' => $ev, 't' => time()];
+        $q = array_slice($q, -50);
+        ftruncate($fp, 0); rewind($fp); fwrite($fp, json_encode($q));
+        flock($fp, LOCK_UN); fclose($fp);
+        echo 'ok';
+        break;
+
     case 'poll':
         $meta = czytaj("$dir/meta.json") ?: ['h' => ''];
         $meta['seen'] = time();
         $meta['name'] = $komputer;
+        $meta['ster'] = ($_SERVER['HTTP_X_CONTROL'] ?? '0') === '1';
         zapisz("$dir/meta.json", $meta);
         $r = czytaj("$dir/req.json");
+        $inp = [];
+        if (is_file("$dir/input.json")) {
+            $fp = fopen("$dir/input.json", 'c+');
+            flock($fp, LOCK_EX);
+            $q = json_decode(stream_get_contents($fp), true) ?: [];
+            ftruncate($fp, 0);
+            flock($fp, LOCK_UN); fclose($fp);
+            foreach ($q as $p) if (time() - ($p['t'] ?? 0) < 15) $inp[] = $p;   // stare polecenia odrzucamy
+        }
         header('Content-Type: application/json');
-        echo json_encode($r ? ['wiek' => microtime(true) - $r['t'], 'm' => $r['m'], 's' => $r['s'], 'q' => $r['q']]
-                            : ['wiek' => 99999]);
+        $out = $r ? ['wiek' => microtime(true) - $r['t'], 'm' => $r['m'], 's' => $r['s'], 'q' => $r['q']]
+                  : ['wiek' => 99999];
+        $out['inp'] = $inp;
+        echo json_encode($out);
         break;
 
     case 'push':
@@ -87,6 +119,7 @@ switch ($a) {
             'mon' => (int)($_SERVER['HTTP_X_MONITORS'] ?? 1),
             'seen' => time(),
             'name' => $komputer,
+            'ster' => ($_SERVER['HTTP_X_CONTROL'] ?? '0') === '1',
         ]);
         echo 'ok';
         break;
