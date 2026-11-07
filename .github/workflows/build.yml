@@ -4,6 +4,9 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   android:
     runs-on: ubuntu-latest
@@ -40,3 +43,23 @@ jobs:
         with:
           name: PodgladEkranu-windows
           path: windows/dist/PodgladSerwer.exe
+
+  release:
+    needs: [android, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: pliki
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: wersja-${{ github.run_number }}
+          name: Podgląd Ekranu ${{ github.run_number }}
+          make_latest: true
+          body: |
+            **PodgladSerwer.exe** – uruchom na Windowsie, ustaw hasło, kliknij Uruchom.
+            **PodgladEkranu.apk** – zainstaluj na telefonie/tablecie (zezwól na instalację z nieznanych źródeł).
+          files: |
+            pliki/PodgladEkranu.apk
+            pliki/PodgladSerwer.exe
