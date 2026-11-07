@@ -52,6 +52,10 @@ jobs:
         with:
           path: pliki
           merge-multiple: true
+      - uses: actions/checkout@v4
+        with:
+          path: src
+      - run: cp src/serwer-www/podglad.php pliki/
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: wersja-${{ github.run_number }}
@@ -60,6 +64,8 @@ jobs:
           body: |
             **PodgladSerwer.exe** – uruchom na Windowsie, ustaw hasło, kliknij Uruchom.
             **PodgladEkranu.apk** – zainstaluj na telefonie/tablecie (zezwól na instalację z nieznanych źródeł).
+            **podglad.php** – tylko do podglądu przez internet: wgraj na swój hosting (np. 3dartgarage.pl).
           files: |
             pliki/PodgladEkranu.apk
             pliki/PodgladSerwer.exe
+            pliki/podglad.php

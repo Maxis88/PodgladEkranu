@@ -70,7 +70,7 @@ public class MainActivity extends Activity {
         l.addView(tytul);
 
         TextView opis = new TextView(this);
-        opis.setText("Uruchom „Podgląd Ekranu – serwer” na komputerze, potem naciśnij Szukaj albo wpisz adres.");
+        opis.setText("W domu: naciśnij Szukaj albo wpisz adres IP komputera.\nPoza domem: wpisz adres pliku podglad.php, np. https://3dartgarage.pl/podglad.php");
         opis.setTextColor(Color.LTGRAY);
         opis.setPadding(0, dp(this, 6), 0, dp(this, 16));
         l.addView(opis);
@@ -84,7 +84,7 @@ public class MainActivity extends Activity {
         znalezione.setOrientation(LinearLayout.VERTICAL);
         l.addView(znalezione);
 
-        eHost = pole(l, "Adres komputera (np. 192.168.1.20)", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        eHost = pole(l, "Adres komputera (IP) lub https://…/podglad.php", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
         ePort = pole(l, "Port", InputType.TYPE_CLASS_NUMBER);
         eHaslo = pole(l, "Hasło", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
 
@@ -187,7 +187,10 @@ public class MainActivity extends Activity {
         String host = eHost.getText().toString().trim();
         String port = ePort.getText().toString().trim();
         String haslo = eHaslo.getText().toString();
-        if (host.isEmpty() || port.isEmpty()) {
+        final boolean relay = host.startsWith("http://") || host.startsWith("https://");
+        final String baza = relay ? host.replaceAll("/+$", "") : "http://" + host + ":" + port;
+        final String pingUrl = relay ? baza + "?a=ping" : baza + "/ping";
+        if (host.isEmpty() || (!relay && port.isEmpty())) {
             tStatus.setText("Podaj adres i port.");
             return;
         }
@@ -197,12 +200,13 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             String blad = null, nazwa = host;
             try {
-                HttpURLConnection c = (HttpURLConnection) new URL("http://" + host + ":" + port + "/ping").openConnection();
+                HttpURLConnection c = (HttpURLConnection) new URL(pingUrl).openConnection();
                 c.setConnectTimeout(4000);
                 c.setReadTimeout(6000);
                 c.setRequestProperty("X-Key", haslo);
                 int kod = c.getResponseCode();
                 if (kod == 401) blad = "Złe hasło.";
+                else if (kod == 503) blad = "Komputer jest offline (serwer na Windows nie działa lub brak adresu podglad.php w jego ustawieniach).";
                 else if (kod != 200) blad = "Serwer odpowiedział kodem " + kod;
                 else {
                     InputStream in = c.getInputStream();
@@ -220,8 +224,8 @@ public class MainActivity extends Activity {
                 if (fb != null) { tStatus.setText(fb); return; }
                 tStatus.setText("");
                 Intent i = new Intent(this, ViewerActivity.class);
-                i.putExtra("host", host);
-                i.putExtra("port", port);
+                i.putExtra("baza", baza);
+                i.putExtra("relay", relay);
                 i.putExtra("haslo", haslo);
                 i.putExtra("nazwa", fn);
                 startActivity(i);

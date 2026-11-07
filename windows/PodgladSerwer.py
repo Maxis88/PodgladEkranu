@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """Podgląd Ekranu – serwer dla Windows (okienko). Telefon łączy się aplikacją Podgląd Ekranu."""
-import hashlib, io, json, os, secrets, socket, sys, threading, time
+import hashlib, io, json, os, secrets, socket, sys, threading, time, urllib.request
 import tkinter as tk
 from tkinter import ttk, messagebox
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -59,9 +59,10 @@ def zrzut(monitor, skala, jakosc, poprzedni_hash):
         return h, None, ile
     img = Image.frombytes("RGB", raw.size, raw.bgra, "raw", "BGRX")
     if skala < 1:
-        img = img.resize((max(1, int(img.width * skala)), max(1, int(img.height * skala))), Image.BILINEAR)
+        img = img.resize((max(1, int(img.width * skala)), max(1, int(img.height * skala))), Image.LANCZOS)
     buf = io.BytesIO()
-    img.save(buf, "JPEG", quality=jakosc, optimize=True)
+    # subsampling=0 = pełny kolor przy literach -> ostry, czytelny tekst
+    img.save(buf, "JPEG", quality=jakosc, optimize=True, subsampling=0 if jakosc >= 70 else 2)
     return h, buf.getvalue(), ile
 
 
@@ -157,6 +158,50 @@ class Serwer:
             u.close()
 
 
+class Posrednik:
+    """Łączy się z podglad.php w internecie: wysyła klatki tylko gdy ktoś ogląda."""
+    def __init__(self, url, haslo, log):
+        self.url, self.haslo, self.log = url.rstrip("/"), haslo, log
+        self.dziala = True
+        threading.Thread(target=self.petla, daemon=True).start()
+
+    def _req(self, a, dane=None, extra=None):
+        h = {"X-Key": self.haslo, "X-Name": socket.gethostname(), "User-Agent": "PodgladEkranu/1.1"}
+        h.update(extra or {})
+        req = urllib.request.Request(f"{self.url}?a={a}", data=dane, headers=h, method="POST" if dane else "GET")
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.read()
+
+    def petla(self):
+        ostatni_hash, blad, ogladany = "", False, False
+        while self.dziala:
+            try:
+                r = json.loads(self._req("poll"))
+                if blad:
+                    self.log("Internet: połączono ponownie"); blad = False
+                if r.get("wiek", 99999) < 20:
+                    if not ogladany:
+                        self.log("Internet: ktoś ogląda"); ogladany = True
+                    h, jpg, ile = zrzut(int(r["m"]), min(1.0, max(0.1, float(r["s"]))),
+                                        min(95, max(10, int(r["q"]))), ostatni_hash)
+                    if jpg:
+                        self._req("push", jpg, {"X-Hash": h, "X-Monitors": str(ile), "Content-Type": "image/jpeg"})
+                        ostatni_hash = h
+                    time.sleep(0.4)
+                else:
+                    if ogladany:
+                        self.log("Internet: podgląd zakończony"); ogladany = False
+                    ostatni_hash = ""
+                    time.sleep(2)
+            except Exception as e:
+                if not blad:
+                    self.log(f"Internet: błąd ({e})"); blad = True
+                time.sleep(5)
+
+    def stop(self):
+        self.dziala = False
+
+
 def autostart(wlacz):
     import winreg
     klucz = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -192,6 +237,11 @@ class Okno:
         self.port = tk.StringVar(value=str(self.cfg.get("port", 8765)))
         ttk.Entry(f, textvariable=self.port, width=8).grid(row=3, column=0, sticky="w")
 
+        ttk.Label(f, text="Przez internet – adres pliku podglad.php (opcjonalnie):").grid(row=10, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self.url = tk.StringVar(value=self.cfg.get("url", ""))
+        ttk.Entry(f, textvariable=self.url, width=48).grid(row=11, column=0, columnspan=2, sticky="we")
+        self.posrednik = None
+
         self.btn = ttk.Button(f, text="▶  Uruchom", command=self.przelacz)
         self.btn.grid(row=4, column=0, columnspan=2, sticky="we", pady=10)
 
@@ -226,13 +276,16 @@ class Okno:
 
     def zapisz(self):
         try:
-            zapisz_cfg({"haslo": self.haslo.get(), "port": int(self.port.get() or 8765), "auto": self.auto.get()})
+            zapisz_cfg({"haslo": self.haslo.get(), "port": int(self.port.get() or 8765), "auto": self.auto.get(),
+                        "url": self.url.get().strip()})
         except Exception:
             pass
 
     def przelacz(self):
         if self.srv.http:
             self.srv.stop()
+            if self.posrednik:
+                self.posrednik.stop(); self.posrednik = None
             self.btn.config(text="▶  Uruchom"); self.status.set("Zatrzymany"); self.adres.set("")
             return
         h = self.haslo.get()
@@ -251,10 +304,18 @@ class Okno:
         self.status.set("Działa – w telefonie naciśnij „Szukaj” albo wpisz adres:")
         self.adres.set("   ".join(adresy_ip()) + f"   port {port}")
         self.dopisz("Serwer uruchomiony")
+        url = self.url.get().strip()
+        if url:
+            if not url.startswith("http"):
+                url = "https://" + url
+            self.posrednik = Posrednik(url, h, lambda t: self.root.after(0, self.dopisz, t))
+            self.adres.set(self.adres.get() + "\nInternet: " + url)
 
     def run(self):
         self.root.mainloop()
         self.srv.stop()
+        if self.posrednik:
+            self.posrednik.stop()
 
 
 if __name__ == "__main__":

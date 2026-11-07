@@ -34,12 +34,13 @@ public class ViewerActivity extends Activity {
 
     private static final String[] TRYBY = {"Ręcznie", "co 10 s", "co 3 s", "co 1 s", "Na żywo"};
     private static final int[] INTERWAL = {0, 10000, 3000, 1000, 250};
-    private static final String[] JAKOSCI = {"Oszczędna", "Średnia", "Dobra", "Pełna"};
-    private static final float[] SKALA = {0.4f, 0.6f, 0.85f, 1f};
-    private static final int[] JPEG = {40, 55, 70, 85};
+    private static final String[] JAKOSCI = {"Oszczędna", "Średnia", "Dobra", "Ostra (tekst)"};
+    private static final float[] SKALA = {0.5f, 0.75f, 1f, 1f};
+    private static final int[] JPEG = {50, 65, 80, 92};
 
     private String baza, haslo, hash = "";
-    private int tryb = 2, jakosc = 1, monitor = 1, monitorow = 1;
+    private boolean relay;
+    private int tryb = 2, jakosc = 2, monitor = 1, monitorow = 1;
     private long bajty = 0;
     private volatile boolean trwa = false, aktywny = false;
 
@@ -66,10 +67,11 @@ public class ViewerActivity extends Activity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         prefs = getSharedPreferences("cfg", MODE_PRIVATE);
         tryb = prefs.getInt("tryb", 2);
-        jakosc = prefs.getInt("jakosc", 1);
+        jakosc = prefs.getInt("jakosc2", 2);
         monitor = prefs.getInt("monitor", 1);
 
-        baza = "http://" + getIntent().getStringExtra("host") + ":" + getIntent().getStringExtra("port");
+        baza = getIntent().getStringExtra("baza");
+        relay = getIntent().getBooleanExtra("relay", false);
         haslo = getIntent().getStringExtra("haslo");
 
         FrameLayout root = new FrameLayout(this);
@@ -154,7 +156,7 @@ public class ViewerActivity extends Activity {
     }
 
     private void zapisz() {
-        prefs.edit().putInt("tryb", tryb).putInt("jakosc", jakosc).putInt("monitor", monitor).apply();
+        prefs.edit().putInt("tryb", tryb).putInt("jakosc2", jakosc).putInt("monitor", monitor).apply();
     }
 
     private void restart() {
@@ -165,7 +167,9 @@ public class ViewerActivity extends Activity {
     private void pobierz(boolean wymus) {
         if (trwa) return;
         trwa = true;
-        final String url = baza + "/shot?m=" + monitor + "&s=" + SKALA[jakosc] + "&q=" + JPEG[jakosc]
+        // przez internet komputer potrzebuje chwili na wysłanie świeżej klatki
+        if (wymus && relay) { ui.postDelayed(() -> pobierz(false), 1500); ui.postDelayed(() -> pobierz(false), 3500); }
+        final String url = baza + (relay ? "?a=shot&m=" : "/shot?m=") + monitor + "&s=" + SKALA[jakosc] + "&q=" + JPEG[jakosc]
                 + "&h=" + (wymus ? "" : hash);
         ex.execute(() -> {
             String blad = null;
