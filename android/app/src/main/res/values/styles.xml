@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Motyw" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:colorAccent">#4F8CFF</item>
+        <item name="android:colorPrimary">#0F1115</item>
+        <item name="android:colorPrimaryDark">#0F1115</item>
+        <item name="android:windowBackground">@color/tlo</item>
+        <item name="android:statusBarColor">#0F1115</item>
+        <item name="android:navigationBarColor">#0F1115</item>
+        <item name="android:colorBackground">#0F1115</item>
+        <item name="android:alertDialogTheme">@style/Dialog</item>
+    </style>
+    <style name="Dialog" parent="@android:style/Theme.Material.Dialog.Alert">
+        <item name="android:colorAccent">#4F8CFF</item>
+        <item name="android:windowBackground">@drawable/dialog_tlo</item>
+    </style>
+    <color name="tlo">#0F1115</color>
+</resources>

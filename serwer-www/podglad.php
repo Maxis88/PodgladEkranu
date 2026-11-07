@@ -1,12 +1,10 @@
 <?php
 /*
- * Podgląd Ekranu – pośrednik internetowy.
- * Wgraj ten plik na dowolny hosting z PHP (np. https://3dartgarage.pl/podglad.php).
- * Nic nie trzeba konfigurować: hasło ustawione w programie na Windows tworzy własny, oddzielny kanał.
- * Klatki trzymane są w folderze podglad_dane/ (zablokowanym dla przeglądarek), nadpisywane na bieżąco.
+ * Podgląd Ekranu – pośrednik internetowy (wersja z wieloma komputerami).
+ * Wgraj ten plik na hosting z PHP (np. https://3dartgarage.pl/podglad.php). Nic nie trzeba konfigurować.
+ * Hasło tworzy prywatną grupę; każdy komputer z tym hasłem jest w niej widoczny pod swoją nazwą.
  */
 header('Cache-Control: no-store');
-header('Access-Control-Expose-Headers: X-Hash, X-Monitors');
 
 $key = $_SERVER['HTTP_X_KEY'] ?? '';
 $a   = $_GET['a'] ?? '';
@@ -18,26 +16,40 @@ if (!is_dir($base)) {
     @file_put_contents("$base/.htaccess", "Require all denied\nDeny from all\n");
     @file_put_contents("$base/index.html", "");
 }
-$dir = $base . '/' . hash('sha256', 'podglad|' . $key);
-
-// Kanał tworzy tylko program Windows (poll/push). Telefon ze złym hasłem dostaje 401.
-if (!is_dir($dir)) {
-    if ($a !== 'poll' && $a !== 'push') { usleep(1500000); http_response_code(401); exit; }
-    @mkdir($dir, 0700, true);
-}
+$kdir = $base . '/' . hash('sha256', 'podglad|' . $key);
+$komputer = ($a === 'poll' || $a === 'push') ? ($_SERVER['HTTP_X_NAME'] ?? 'Komputer') : ($_GET['pc'] ?? '');
+$komputer = mb_substr(trim($komputer), 0, 60) ?: 'Komputer';
+$dir = $kdir . '/' . substr(hash('sha256', $komputer), 0, 24);
 
 function czytaj($f) { $s = @file_get_contents($f); return $s ? json_decode($s, true) : null; }
 function zapisz($f, $d) { file_put_contents("$f.tmp", json_encode($d)); rename("$f.tmp", $f); }
 
+if ($a === 'poll' || $a === 'push') {
+    if (!is_dir($dir)) @mkdir($dir, 0700, true);
+} elseif (!is_dir($kdir)) {
+    usleep(1500000); http_response_code(401); exit;   // złe hasło
+}
+
 switch ($a) {
-    case 'ping':   // telefon: czy komputer jest online
-        $meta = czytaj("$dir/meta.json");
-        $online = $meta && (time() - ($meta['seen'] ?? 0)) < 30;
-        if (!$online) { http_response_code(503); echo 'Komputer offline'; exit; }
-        echo $meta['name'] ?? 'Komputer';
+    case 'list':   // telefon: lista komputerów w grupie
+        $out = [];
+        foreach (glob("$kdir/*/meta.json") as $f) {
+            $m = czytaj($f);
+            if (!$m || empty($m['name'])) continue;
+            $out[] = ['name' => $m['name'], 'online' => (time() - ($m['seen'] ?? 0)) < 30];
+        }
+        header('Content-Type: application/json');
+        echo json_encode($out);
         break;
 
-    case 'shot':   // telefon: zgłasza chęć oglądania + pobiera najnowszą klatkę
+    case 'ping':
+        $meta = czytaj("$dir/meta.json");
+        if (!$meta || (time() - ($meta['seen'] ?? 0)) >= 30) { http_response_code(503); echo 'offline'; exit; }
+        echo $meta['name'];
+        break;
+
+    case 'shot':
+        if (!is_dir($dir)) { http_response_code(503); exit; }
         zapisz("$dir/req.json", [
             't' => microtime(true),
             'm' => (int)($_GET['m'] ?? 1),
@@ -45,22 +57,19 @@ switch ($a) {
             'q' => (int)($_GET['q'] ?? 80),
         ]);
         $meta = czytaj("$dir/meta.json");
-        if ($meta) header('X-Monitors: ' . (int)($meta['mon'] ?? 1));
-        if (!$meta || !is_file("$dir/frame.jpg") || ($meta['h'] ?? '') === ($_GET['h'] ?? '')) {
-            if ($meta) header('X-Hash: ' . $meta['h']);
-            http_response_code(204);
-            exit;
+        if ($meta) { header('X-Monitors: ' . (int)($meta['mon'] ?? 1)); header('X-Hash: ' . ($meta['h'] ?? '')); }
+        if (!$meta || empty($meta['h']) || !is_file("$dir/frame.jpg") || $meta['h'] === ($_GET['h'] ?? '')) {
+            http_response_code(204); exit;
         }
-        header('X-Hash: ' . $meta['h']);
         header('Content-Type: image/jpeg');
         header('Content-Length: ' . filesize("$dir/frame.jpg"));
         readfile("$dir/frame.jpg");
         break;
 
-    case 'poll':   // Windows: czy ktoś ogląda i z jakimi ustawieniami
+    case 'poll':
         $meta = czytaj("$dir/meta.json") ?: ['h' => ''];
         $meta['seen'] = time();
-        $meta['name'] = substr($_SERVER['HTTP_X_NAME'] ?? 'Komputer', 0, 60);
+        $meta['name'] = $komputer;
         zapisz("$dir/meta.json", $meta);
         $r = czytaj("$dir/req.json");
         header('Content-Type: application/json');
@@ -68,7 +77,7 @@ switch ($a) {
                             : ['wiek' => 99999]);
         break;
 
-    case 'push':   // Windows: wysyła nową klatkę
+    case 'push':
         $jpg = file_get_contents('php://input', false, null, 0, 8 * 1024 * 1024);
         if (!$jpg || substr($jpg, 0, 2) !== "\xFF\xD8") { http_response_code(400); exit; }
         file_put_contents("$dir/frame.tmp", $jpg);
@@ -77,7 +86,7 @@ switch ($a) {
             'h' => substr(preg_replace('/[^a-f0-9]/', '', $_SERVER['HTTP_X_HASH'] ?? ''), 0, 32),
             'mon' => (int)($_SERVER['HTTP_X_MONITORS'] ?? 1),
             'seen' => time(),
-            'name' => substr($_SERVER['HTTP_X_NAME'] ?? 'Komputer', 0, 60),
+            'name' => $komputer,
         ]);
         echo 'ok';
         break;

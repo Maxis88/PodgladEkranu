@@ -14,7 +14,7 @@ UDP_PORT = 8766
 CFG_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), APP)
 CFG_FILE = os.path.join(CFG_DIR, "config.json")
 
-stan = {"haslo": "", "log": None}
+stan = {"haslo": "", "log": None, "nazwa": socket.gethostname()}
 _lock = threading.Lock()
 
 
@@ -98,7 +98,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(401)
             if stan["log"]:
                 stan["log"](f"Połączono: {self.client_address[0]}")
-            return self._send(200, socket.gethostname().encode())
+            return self._send(200, stan["nazwa"].encode("utf-8"))
         if u.path == "/shot":
             if not self._auth():
                 return self._send(401)
@@ -146,7 +146,7 @@ class Serwer:
                 break
             if data.startswith(b"PODGLAD?"):
                 try:
-                    s.sendto(f"PODGLAD!{self.port}!{socket.gethostname()}".encode(), addr)
+                    s.sendto(f"PODGLAD!{self.port}!{stan['nazwa']}".encode("utf-8"), addr)
                 except OSError:
                     pass
 
@@ -166,7 +166,7 @@ class Posrednik:
         threading.Thread(target=self.petla, daemon=True).start()
 
     def _req(self, a, dane=None, extra=None):
-        h = {"X-Key": self.haslo, "X-Name": socket.gethostname(), "User-Agent": "PodgladEkranu/1.1"}
+        h = {"X-Key": self.haslo, "X-Name": stan["nazwa"].encode("utf-8").decode("latin-1"), "User-Agent": "PodgladEkranu/1.2"}
         h.update(extra or {})
         req = urllib.request.Request(f"{self.url}?a={a}", data=dane, headers=h, method="POST" if dane else "GET")
         with urllib.request.urlopen(req, timeout=20) as r:
@@ -233,6 +233,10 @@ class Okno:
         ttk.Checkbutton(f, text="pokaż", variable=self.pokaz,
                         command=lambda: self.e_haslo.config(show="" if self.pokaz.get() else "•")).grid(row=1, column=1, padx=6)
 
+        ttk.Label(f, text="Nazwa tego komputera (widoczna w telefonie):").grid(row=12, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self.nazwa = tk.StringVar(value=self.cfg.get("nazwa", socket.gethostname()))
+        ttk.Entry(f, textvariable=self.nazwa, width=48).grid(row=13, column=0, columnspan=2, sticky="we")
+
         ttk.Label(f, text="Port:").grid(row=2, column=0, sticky="w", pady=(8, 0))
         self.port = tk.StringVar(value=str(self.cfg.get("port", 8765)))
         ttk.Entry(f, textvariable=self.port, width=8).grid(row=3, column=0, sticky="w")
@@ -277,7 +281,7 @@ class Okno:
     def zapisz(self):
         try:
             zapisz_cfg({"haslo": self.haslo.get(), "port": int(self.port.get() or 8765), "auto": self.auto.get(),
-                        "url": self.url.get().strip()})
+                        "url": self.url.get().strip(), "nazwa": self.nazwa.get().strip()})
         except Exception:
             pass
 
@@ -295,6 +299,7 @@ class Okno:
         try:
             port = int(self.port.get())
             stan["haslo"] = h
+            stan["nazwa"] = self.nazwa.get().strip() or socket.gethostname()
             self.srv.start(port)
         except Exception as e:
             messagebox.showerror("Błąd", f"Nie mogę uruchomić serwera:\n{e}")
@@ -312,6 +317,7 @@ class Okno:
             self.adres.set(self.adres.get() + "\nInternet: " + url)
 
     def run(self):
+        self.root.protocol("WM_DELETE_WINDOW", lambda: (self.zapisz(), self.root.destroy()))
         self.root.mainloop()
         self.srv.stop()
         if self.posrednik:

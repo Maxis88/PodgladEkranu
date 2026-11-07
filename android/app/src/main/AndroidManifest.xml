@@ -8,7 +8,7 @@
         android:label="Podgląd Ekranu"
         android:icon="@drawable/ic_launcher"
         android:usesCleartextTraffic="true"
-        android:theme="@android:style/Theme.Material.NoActionBar">
+        android:theme="@style/Motyw">
 
         <activity
             android:name=".MainActivity"
